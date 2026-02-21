@@ -4,6 +4,8 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+import io
 
 
 class DB_Map():
@@ -20,7 +22,7 @@ class DB_Map():
                             )''')
             conn.commit()
 
-    def add_city(self,user_id, city_name ):
+    def add_city(self, user_id, city_name):
         conn = sqlite3.connect(self.database)
         with conn:
             cursor = conn.cursor()
@@ -34,7 +36,6 @@ class DB_Map():
             else:
                 return 0
 
-            
     def select_cities(self, user_id):
         conn = sqlite3.connect(self.database)
         with conn:
@@ -43,10 +44,8 @@ class DB_Map():
                             FROM users_cities  
                             JOIN cities ON users_cities.city_id = cities.id
                             WHERE users_cities.user_id = ?''', (user_id,))
-
             cities = [row[0] for row in cursor.fetchall()]
             return cities
-
 
     def get_coordinates(self, city_name):
         conn = sqlite3.connect(self.database)
@@ -58,109 +57,57 @@ class DB_Map():
             coordinates = cursor.fetchone()
             return coordinates
 
-    def create_graph(self, path, cities):
-        """Создает карту мира с отмеченными городами"""
-        # Создаем фигуру с проекцией PlateCarree
-        fig, ax = plt.subplots(figsize=(15, 10), subplot_kw={'projection': ccrs.PlateCarree()})
-        
-        # Добавляем географические объекты
-        ax.coastlines()
-        ax.add_feature(plt.matplotlib.patches.Rectangle((0, 0), 1, 1, 
-                      transform=ax.transAxes, facecolor='lightblue', alpha=0.3))
-        
-        # Устанавливаем глобальные границы
+    def create_graph(self, cities):
+        """
+        Создаёт карту мира с отмеченными городами.
+        Принимает список названий городов.
+        Возвращает объект BytesIO с PNG-изображением.
+        """
+        fig = plt.figure(figsize=(14, 8))
+        ax = fig.add_subplot(1, 1, 1, projection=ccrs.PlateCarree())
+
+        # Добавляем базовые слои карты
+        ax.add_feature(cfeature.LAND, facecolor='#f5f5dc')
+        ax.add_feature(cfeature.OCEAN, facecolor='#aadaff')
+        ax.add_feature(cfeature.COASTLINE, linewidth=0.5)
+        ax.add_feature(cfeature.BORDERS, linestyle=':', linewidth=0.4)
         ax.set_global()
-        
-        # Отмечаем города на карте
-        for city in cities:
-            coordinates = self.get_coordinates(city)
-            if coordinates:
-                lat, lng = coordinates
-                # Добавляем точку города
-                ax.plot(lng, lat, 'ro', markersize=8, transform=ccrs.PlateCarree(), 
-                       marker='o', markerfacecolor='red', markeredgecolor='darkred', 
-                       markeredgewidth=1.5)
-                # Добавляем подпись города
-                ax.text(lng, lat, f'  {city}', transform=ccrs.PlateCarree(),
-                       fontsize=9, verticalalignment='center',
-                       bbox=dict(boxstyle='round,pad=0.3', facecolor='yellow', alpha=0.7))
-        
-        # Добавляем сетку координат
-        ax.gridlines(draw_labels=True, linewidth=0.5, alpha=0.5)
-        
-        # Сохраняем карту
-        plt.tight_layout()
-        plt.savefig(path, dpi=150, bbox_inches='tight')
-        plt.close()
-        
-        return path
-        
+
+        if not cities:
+            ax.set_title('Нет городов для отображения', fontsize=14)
+        else:
+            coords = []
+            for city in cities:
+                result = self.get_coordinates(city)
+                if result:
+                    lat, lng = result
+                    coords.append((city, lat, lng))
+
+            if coords:
+                lats = [c[1] for c in coords]
+                lngs = [c[2] for c in coords]
+
+                ax.scatter(lngs, lats, color='red', s=60,
+                           transform=ccrs.PlateCarree(), zorder=5)
+
+                for city, lat, lng in coords:
+                    ax.text(lng + 1, lat + 1, city, fontsize=8,
+                            transform=ccrs.PlateCarree(), zorder=6,
+                            bbox=dict(facecolor='white', alpha=0.6, boxstyle='round,pad=0.2'))
+
+                title = cities[0] if len(cities) == 1 else f'Города на карте ({len(cities)} шт.)'
+                ax.set_title(title, fontsize=14)
+
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png', bbox_inches='tight', dpi=120)
+        plt.close(fig)
+        buf.seek(0)
+        return buf
+
     def draw_distance(self, city1, city2):
-        """Рисует карту с двумя городами и линией между ними"""
-        from math import radians, cos, sin, asin, sqrt
-        
-        # Получаем координаты городов
-        coords1 = self.get_coordinates(city1)
-        coords2 = self.get_coordinates(city2)
-        
-        if not coords1 or not coords2:
-            return None
-        
-        lat1, lng1 = coords1
-        lat2, lng2 = coords2
-        
-        # Вычисляем расстояние по формуле гаверсинусов
-        lng1, lat1, lng2, lat2 = map(radians, [lng1, lat1, lng2, lat2])
-        dlng = lng2 - lng1
-        dlat = lat2 - lat1
-        a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlng/2)**2
-        c = 2 * asin(sqrt(a))
-        r = 6371  # Радиус Земли в километрах
-        distance = c * r
-        
-        # Создаем карту
-        fig, ax = plt.subplots(figsize=(15, 10), subplot_kw={'projection': ccrs.PlateCarree()})
-        ax.coastlines()
-        ax.set_global()
-        
-        # Отмечаем города
-        lat1_deg, lng1_deg = coords1
-        lat2_deg, lng2_deg = coords2
-        
-        ax.plot(lng1_deg, lat1_deg, 'go', markersize=10, transform=ccrs.PlateCarree(),
-               marker='o', markerfacecolor='green', markeredgecolor='darkgreen', markeredgewidth=2)
-        ax.text(lng1_deg, lat1_deg, f'  {city1}', transform=ccrs.PlateCarree(),
-               fontsize=10, verticalalignment='center',
-               bbox=dict(boxstyle='round,pad=0.3', facecolor='lightgreen', alpha=0.8))
-        
-        ax.plot(lng2_deg, lat2_deg, 'bo', markersize=10, transform=ccrs.PlateCarree(),
-               marker='o', markerfacecolor='blue', markeredgecolor='darkblue', markeredgewidth=2)
-        ax.text(lng2_deg, lat2_deg, f'  {city2}', transform=ccrs.PlateCarree(),
-               fontsize=10, verticalalignment='center',
-               bbox=dict(boxstyle='round,pad=0.3', facecolor='lightblue', alpha=0.8))
-        
-        # Рисуем линию между городами
-        ax.plot([lng1_deg, lng2_deg], [lat1_deg, lat2_deg], 'r-', 
-               linewidth=2, transform=ccrs.PlateCarree(), alpha=0.6)
-        
-        # Добавляем подпись с расстоянием в центре линии
-        mid_lng = (lng1_deg + lng2_deg) / 2
-        mid_lat = (lat1_deg + lat2_deg) / 2
-        ax.text(mid_lng, mid_lat, f'{distance:.0f} км', transform=ccrs.PlateCarree(),
-               fontsize=12, fontweight='bold',
-               bbox=dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.9))
-        
-        ax.gridlines(draw_labels=True, linewidth=0.5, alpha=0.5)
-        
-        path = f'distance_{city1}_{city2}.png'
-        plt.tight_layout()
-        plt.savefig(path, dpi=150, bbox_inches='tight')
-        plt.close()
-        
-        return path, distance
+        pass
 
 
-if __name__=="__main__":
-    
+if __name__ == "__main__":
     m = DB_Map(DATABASE)
     m.create_user_table()
